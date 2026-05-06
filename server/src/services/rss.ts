@@ -9,7 +9,7 @@ import { getStorageObject, getStoragePublicUrl, headStorageObject, putStorageObj
 import { FAVICON_ALLOWED_TYPES, getFaviconKey } from "./favicon";
 import type { DB } from "../core/hono-types";
 
-// Lazy-loaded modules for RSS generation
+// 延迟加载模块以优化启动性能
 let Feed: any;
 let unified: any;
 let remarkParse: any;
@@ -69,12 +69,12 @@ async function handleFeed(c: AppContext, fileName: string) {
 
     const key = path_join(folder, fileName);
     
-    // 1. 尝试获取 R2 缓存
+    // 1. 尝试获取 R2 缓存（增加对完整域名的校验）
     try {
         const response = await profileAsync(c, 'rss_s3_fetch', () => getStorageObject(env, key));
         if (response) {
             const text = await response.text();
-            // 如果缓存内容里包含完整的域名（检测是否包含 http），则直接返回
+            // 只有当缓存中包含 http 协议时，才认为该缓存是“修复后”的正确版本
             if (text.includes('http://') || text.includes('https://')) {
                 return c.text(text, 200, {
                     'Content-Type': contentTypeMap[fileName] || 'application/xml',
@@ -87,8 +87,8 @@ async function handleFeed(c: AppContext, fileName: string) {
     // 2. 缓存失效或格式不对，动态生成
     try {
         const url = new URL(c.req.url);
-        // 自动获取当前请求的协议和域名 (e.g., https://blog.cunzhangblog.com)
-        const frontendUrl = `${url.protocol}//${url.host}`; 
+        // 获取当前请求的原始 origin (e.g., https://blog.cunzhangblog.com)
+        const frontendUrl = url.origin; 
         
         const feed = await profileAsync(c, 'rss_generate_feed', () => generateFeed(env, db, frontendUrl, c));
         
@@ -101,7 +101,7 @@ async function handleFeed(c: AppContext, fileName: string) {
             content = feed.rss2();
         }
         
-        // 关键：将带正确域名的内容异步更新到 R2，修复以后其他人的访问
+        // 异步更新到存储桶，确保下次访问命中的是带域名的版本
         c.executionCtx.waitUntil(
             putStorageObjectAtKey(env, key, content, contentTypeMap[fileName] || 'application/xml')
         );
@@ -111,6 +111,7 @@ async function handleFeed(c: AppContext, fileName: string) {
             'Cache-Control': 'public, max-age=300',
         });
     } catch (genError: any) {
+        console.error("RSS Generation Error:", genError);
         return c.text(`RSS generation failed: ${genError.message}`, 500);
     }
 }
@@ -122,20 +123,24 @@ async function generateFeed(env: any, db: DB, frontendUrl: string, c?: AppContex
         await initRSSModules();
     }
 
-    // 优先使用环境变量，否则使用动态识别的域名
-    const baseUrl = (env['SITE_URL'] || frontendUrl || "").replace(/\/$/, "");
+    // 域名处理逻辑：环境变量优先 -> 请求域名兜底 -> 替换末尾斜杠
+    let baseUrl = (env['SITE_URL'] || frontendUrl || "").trim();
+    if (baseUrl && !baseUrl.startsWith('http')) {
+        baseUrl = `https://${baseUrl}`;
+    }
+    baseUrl = baseUrl.replace(/\/$/, "");
 
     const feedConfig: any = {
-        title: env.RSS_TITLE || "Rin Feed",
-        description: env.RSS_DESCRIPTION || "Feed from Rin",
-        id: baseUrl || "rin-feed",
+        title: env.RSS_TITLE || "Web3村长博客",
+        description: env.RSS_DESCRIPTION || "技术、AI 与 户外运动分享",
+        id: baseUrl || "cunzhang-blog-feed",
         link: baseUrl || "/",
         copyright: `All rights reserved ${new Date().getFullYear()}`,
         generator: "Feed from Rin",
         feedLinks: {
-            rss: baseUrl ? `${baseUrl}/rss.xml` : `/rss.xml`,
-            json: baseUrl ? `${baseUrl}/rss.json` : `/rss.json`,
-            atom: baseUrl ? `${baseUrl}/atom.xml` : `/atom.xml`,
+            rss: `${baseUrl}/rss.xml`,
+            json: `${baseUrl}/rss.json`,
+            atom: `${baseUrl}/atom.xml`,
         },
     };
 
@@ -172,12 +177,13 @@ async function generateFeed(env: any, db: DB, frontendUrl: string, c?: AppContex
                     .process(f.content);
                 contentHtml = file.toString();
             } catch (e) {
+                // 如果渲染失败（如 CPU 超时），回退到原文，确保 RSS 不白屏
                 contentHtml = f.content;
             }
         }
 
         const itemPath = f.alias ? `/${f.alias}` : `/feed/${f.id}`;
-        // 确保生成的绝对路径是 https://域名/路径
+        // 强制拼接成绝对链接
         const absoluteLink = baseUrl 
             ? `${baseUrl}/${itemPath.replace(/^\//, "")}` 
             : itemPath;
@@ -197,7 +203,9 @@ async function generateFeed(env: any, db: DB, frontendUrl: string, c?: AppContex
     return feed;
 }
 
+// 供 Cloudflare 定时任务调用的函数
 export async function rssCrontab(env: any, db: DB) {
+    // 定时任务运行在边缘，必须依赖 SITE_URL 变量
     const baseUrl = env['SITE_URL'] || ""; 
     const feed = await generateFeed(env, db, baseUrl);
     const folder = env.S3_CACHE_FOLDER || "cache/";
@@ -211,7 +219,9 @@ export async function rssCrontab(env: any, db: DB) {
                 data,
                 name.endsWith('.json') ? 'application/json' : 'application/xml'
             );
-        } catch (e: any) {}
+        } catch (e: any) {
+            console.error(`Failed to save ${name} to cache:`, e.message);
+        }
     }
 
     await Promise.all([
