@@ -40,27 +40,22 @@ async function initRSSModules() {
 export function RSSService(): Hono {
     const app = new Hono();
 
-    // GET /rss.xml
     app.get('/rss.xml', async (c: AppContext) => {
         return handleFeed(c, 'rss.xml');
     });
 
-    // GET /atom.xml
     app.get('/atom.xml', async (c: AppContext) => {
         return handleFeed(c, 'atom.xml');
     });
 
-    // GET /rss.json
     app.get('/rss.json', async (c: AppContext) => {
         return handleFeed(c, 'rss.json');
     });
 
-    // GET /feed.json
     app.get('/feed.json', async (c: AppContext) => {
         return handleFeed(c, 'feed.json');
     });
 
-    // Support legacy feed.xml - redirect to rss.xml
     app.get('/feed.xml', async (c: AppContext) => {
         return c.redirect('/rss.xml', 301);
     });
@@ -71,10 +66,8 @@ export function RSSService(): Hono {
 async function handleFeed(c: AppContext, fileName: string) {
     const env = c.get('env');
     const db = c.get('db');
-
     const folder = env.S3_CACHE_FOLDER || 'cache/';
 
-    // Map file extensions to proper MIME types
     const contentTypeMap: Record<string, string> = {
         'rss.xml': 'application/rss+xml; charset=UTF-8',
         'atom.xml': 'application/atom+xml; charset=UTF-8',
@@ -83,27 +76,20 @@ async function handleFeed(c: AppContext, fileName: string) {
     };
     const contentType = contentTypeMap[fileName] || 'application/xml';
 
-    // Try to fetch from S3 first (if configured)
     const key = path_join(folder, fileName);
     
     try {
         const response = await profileAsync(c, 'rss_s3_fetch', () => getStorageObject(env, key));
-
         if (response) {
-            console.log(`[RSS] Storage hit for ${key}`);
             const text = await profileAsync(c, 'rss_s3_body', () => response.text());
             return c.text(text, 200, {
                 'Content-Type': contentType,
                 'Cache-Control': 'public, max-age=3600',
             });
         }
-    } catch (e: any) {
-        console.log(`[RSS] Storage fetch failed: ${e.message}, falling back to generation`);
-    }
+    } catch (e: any) {}
     
-    // Generate feed in real-time (fallback or primary mode)
     try {
-        console.log(`[RSS] Generating ${fileName} in real-time...`);
         const frontendUrl = new URL(c.req.url).origin;
         const feed = await profileAsync(c, 'rss_generate_feed', () => generateFeed(env, db, frontendUrl, c));
         
@@ -125,15 +111,13 @@ async function handleFeed(c: AppContext, fileName: string) {
         
         return c.text(content, 200, {
             'Content-Type': contentType,
-            'Cache-Control': 'public, max-age=300', // Shorter cache for real-time
+            'Cache-Control': 'public, max-age=300',
         });
     } catch (genError: any) {
-        console.error('[RSS] Generation failed:', genError);
         return c.text(`RSS generation failed: ${genError.message}`, 500);
     }
 }
 
-// Extract feed generation logic for reuse
 async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContext) {
     if (c) {
         await profileAsync(c, 'rss_init_modules', () => initRSSModules());
@@ -152,7 +136,6 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
         updated: new Date(),
         generator: "Feed from Rin",
         feedLinks: {
-            // Native RSS support - feeds are now served from root path
             rss: `${frontendUrl}/rss.xml`,
             json: `${frontendUrl}/rss.json`,
             atom: `${frontendUrl}/atom.xml`,
@@ -168,7 +151,6 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
         }
     }
 
-    // Try to discover stored favicon assets.
     for (const [_mimeType, ext] of Object.entries(FAVICON_ALLOWED_TYPES)) {
         const originFaviconKey = path_join(env.S3_FOLDER || "", `originFavicon${ext}`);
         try {
@@ -179,9 +161,7 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
                 feedConfig.image = getStoragePublicUrl(env, originFaviconKey, publicBaseUrl);
                 break;
             }
-        } catch (error) {
-            continue;
-        }
+        } catch (error) { continue; }
     }
 
     try {
@@ -195,29 +175,34 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
 
     const feed = new Feed(feedConfig);
 
-    // Get published feeds
-    const feed_list = c
-        ? await profileAsync(c, 'rss_feed_list', () => db.query.feeds.findMany({
-            where: and(eq(feeds.draft, 0), eq(feeds.listed, 1)),
-            orderBy: [desc(feeds.createdAt), desc(feeds.updatedAt)],
-            limit: 20,
-            with: {
-                user: { columns: { id: true, username: true, avatar: true } },
-            },
-        }))
-        : await db.query.feeds.findMany({
+    // --- 修改重点开始 ---
+    const queryConfig = {
         where: and(eq(feeds.draft, 0), eq(feeds.listed, 1)),
         orderBy: [desc(feeds.createdAt), desc(feeds.updatedAt)],
         limit: 20,
+        // 显式声明需要获取的字段，确保 alias 被包含
+        columns: {
+            id: true,
+            alias: true, 
+            title: true,
+            summary: true,
+            content: true,
+            createdAt: true,
+            updatedAt: true,
+        },
         with: {
             user: { columns: { id: true, username: true, avatar: true } },
         },
-    });
+    };
+
+    const feed_list = c
+        ? await profileAsync(c, 'rss_feed_list', () => db.query.feeds.findMany(queryConfig))
+        : await db.query.feeds.findMany(queryConfig);
+    // --- 修改重点结束 ---
 
     for (const f of feed_list) {
         const { summary, content, user, ...other } = f;
         
-        // Convert markdown to HTML
         let contentHtml = '';
         if (content) {
             try {
@@ -229,15 +214,14 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
                     .process(content);
                 contentHtml = file.toString();
             } catch (e) {
-                console.error('[RSS] Markdown conversion error:', e);
                 contentHtml = content;
             }
         }
 
-    feed.addItem({
+        feed.addItem({
             title: other.title || "No title",
             id: other.id?.toString() || "0",
-            // 逻辑：如果有 alias(slug) 就用 alias，没有才回退到 feed/id
+            // 关键：现在 other.alias 保证有值，逻辑才会生效
             link: other.alias ? `${frontendUrl}/${other.alias}` : `${frontendUrl}/feed/${other.id}`, 
             date: other.createdAt,
             description: summary.length > 0
@@ -255,13 +239,8 @@ async function generateFeed(env: Env, db: DB, frontendUrl: string, c?: AppContex
 }
 
 export async function rssCrontab(env: Env, db: DB) {
-    // Generate feed
-    // For cron jobs, we don't have a request context, so we use a placeholder
-    // The RSS feeds generated by cron jobs will be stored in S3 and served from there
     const frontendUrl = '';
     const feed = await generateFeed(env, db, frontendUrl);
-    
-    // Save to S3 (if configured)
     const folder = env.S3_CACHE_FOLDER || "cache/";
 
     async function save(name: string, data: string) {
@@ -273,10 +252,7 @@ export async function rssCrontab(env: Env, db: DB) {
                 data,
                 name.endsWith('.json') ? 'application/json' : 'application/xml'
             );
-            console.log(`[RSS] Saved ${name} to S3`);
-        } catch (e: any) {
-            console.error(`[RSS] Failed to save ${name}:`, e.message);
-        }
+        } catch (e: any) {}
     }
 
     await save("rss.xml", feed.rss2());
