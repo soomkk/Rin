@@ -1,5 +1,9 @@
-User-agent: Googlebot
-Disallow: /writing/
-
 User-agent: *
 Allow: /
+
+Disallow: /admin/
+Disallow: /config/
+
+Sitemap: https://www.cunzhangblog.com/sitemap.xml
+
+llms: https://www.cunzhangblog.com/llms.txt
