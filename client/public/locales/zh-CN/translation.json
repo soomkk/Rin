@@ -4,7 +4,7 @@
     "title": "关于"
   },
   "privacy": "隐私政策",
-  "Terms of Service": "服务条款"，
+  "Terms of Service": "服务条款",
   "admin": {
     "back_to_site": "返回站点",
     "compat_tasks_description": "批量触发向前兼容任务，用于补齐历史帖子缺失的 AI 摘要和图片 blurhash 元数据。",
