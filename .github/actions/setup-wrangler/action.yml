@@ -5,7 +5,7 @@ inputs:
   mode:
     description: 'Build mode (dry-run or deploy)'
     required: false
-    default: 'dry-run'
+    default: 'deploy'  # 把这里的 dry-run 改成 deploy
 
 runs:
   using: 'composite'
