@@ -4,6 +4,7 @@
     "title": "關於"
   },
   "privacy": "隱私政策",
+  "Terms of Service": "服務條款",
   "admin": {
     "back_to_site": "返回站點",
     "compat_tasks_description": "批次觸發向前相容任務，用於補齊歷史文章缺失的 AI 摘要與圖片 blurhash 中繼資料。",
