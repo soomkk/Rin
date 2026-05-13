@@ -20,6 +20,7 @@ import { Tips } from "../components/tips";
 import mermaid from "mermaid";
 import { AdjacentSection } from "../components/adjacent_feed.tsx";
 import { stripImageUrlMetadata } from "../utils/image-upload";
+import { Reward } from "../components/reward";
 
 function extractFirstMarkdownImageUrl(content: string) {
   const match = /!\[.*?\]\((\S+?)(?:\s+"[^"]*")?\)/.exec(content);
@@ -281,6 +282,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
                   </div>
                 )}
                 <Markdown content={feed.content} />
+                <Reward />
                 <div className="mt-6 flex flex-col gap-2">
                   {feed.hashtags.length > 0 && (
                     <div className="flex flex-row flex-wrap gap-x-2">
