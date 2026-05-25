@@ -73,7 +73,7 @@ export function HashtagPage({ name }: { name: string }) {
                         </p>
                         <div className="flex flex-row justify-between">
                             <p className="text-sm mt-4 text-neutral-500 font-normal">
-                                {t('article.total$count', { count: hashtag?.feeds?.length })}
+                                {t('total$count', { count: hashtag?.feeds?.length || 0 })}
                             </p>
                         </div>
                     </div>
